@@ -141,7 +141,7 @@ class EKDTrainer:
     def evaluate(self, mode='val'):
         self.student_model.eval()
         correct, total, eval_loss = 0, 0, 0
-        y_true, y_pred = [],[]
+        y_true, y_pred_labels, y_pred_logits = [], [], []
 
         for inputs, labels in self.loader_dict[mode]:
             inputs, labels = inputs.to(self.device), labels.view(-1).to(self.device)
@@ -153,18 +153,22 @@ class EKDTrainer:
             correct += pred.eq(labels).sum().item()
             total += labels.size(0)
 
+            # [核心修复]: 评价指标需要 labels，而最后 summarize 需要原始的 logits
             y_true.extend(labels.cpu().numpy())
-            y_pred.extend(pred.cpu().numpy())
+            y_pred_labels.extend(pred.cpu().numpy())
+            y_pred_logits.extend(s_logits.cpu().numpy())
 
         acc = 100. * correct / total
-        mf1 = skmet.f1_score(y_true, y_pred, average='macro') * 100
-        return acc, mf1, eval_loss / total, y_true, y_pred
+        mf1 = skmet.f1_score(y_true, y_pred_labels, average='macro') * 100
+
+        # 返回最终测试所需要的 Numpy 二维矩阵格式
+        return acc, mf1, eval_loss / total, np.array(y_true), np.array(y_pred_logits)
 
     def measure_latency(self):
         self.student_model.eval()
-        # [修复]: 修改了假数据的生成长度匹配你的真实信号
         dummy_input = torch.randn(10, 1, 30000).to(self.device)
 
+        # 1. 训练态推理 (多分支)
         torch.cuda.synchronize()
         t0 = time.time()
         for _ in range(50): self.student_model(dummy_input)
@@ -172,14 +176,17 @@ class EKDTrainer:
         t1 = time.time()
         print(f"\n[算力分析] 重参数化前 (多分支训练态) 推理时间: {(t1 - t0) / 50 * 1000:.2f} ms / batch")
 
-        # [修复]: 调用正确的函数名触发折叠
-        self.student_model.deploy_and_prune()
+        # 2. 部署态推理 (单分支大卷积 + 自动剪枝)
+        # [修复]: 传入剪枝率，例如修剪掉25%的冗余通道
+        self.student_model.deploy_and_prune(prune_ratio=0.25)
+
         torch.cuda.synchronize()
         t0 = time.time()
         for _ in range(50): self.student_model(dummy_input)
         torch.cuda.synchronize()
         t1 = time.time()
-        print(f"[算力分析] 重参数化后 (单分支部署态) 推理时间: {(t1 - t0) / 50 * 1000:.2f} ms / batch  ---> 速度提升")
+        print(
+            f"[算力分析] 重参数化后 (部署态+剪枝25%) 推理时间: {(t1 - t0) / 50 * 1000:.2f} ms / batch  ---> 速度飙升！")
 
     def run(self):
         print("\n[INFO] 开始第五章 EKD 知识蒸馏轻量化训练...")

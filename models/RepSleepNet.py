@@ -133,15 +133,30 @@ class RepSleepNet(nn.Module):
         # 返回 logits 用于交叉熵，返回 feat_pooled 用于特征蒸馏
         return logits, feat_pooled
 
-    def deploy_and_prune(self, threshold=1e-3):
+    def deploy_and_prune(self, prune_ratio=0.2):
+        """
+        部署与剪枝一体化核心函数：
+        1. 首先执行结构重参数化。
+        2. 计算BN层权重的L1范数，利用分位数执行物理通道剪枝。
+        """
+        # 1. 重参数化
         for m in self.modules():
             if hasattr(m, 'reparameterize'):
                 m.reparameterize()
 
+        # 2. 物理剪枝 (基于解释性打分/BN权重相对大小)
         bn_layer = self.spatial_stem[5]
         gamma = bn_layer.weight.data.abs()
+
+        # [修复]: 计算动态分位数阈值，强行剪掉最不重要的前 prune_ratio (如20%)
+        threshold = torch.quantile(gamma, prune_ratio)
+
+        # 寻找存活的通道索引
         alive_indices = torch.nonzero(gamma > threshold).squeeze()
-        print(f"[INFO] 剪枝完成：保留了 {len(alive_indices)}/{self.feature_dim} 个通道！")
+        print(
+            f"\n[INFO] 剪枝完成：保留了 {len(alive_indices)}/{self.feature_dim} 个通道！ (剪枝率: {prune_ratio * 100}%)")
+
+        # 将低于阈值的通道特征拦截置零
         self.channel_mask[gamma <= threshold] = 0.0
 
 
