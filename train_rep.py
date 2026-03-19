@@ -190,7 +190,7 @@ class EKDTrainer:
 
     def run(self):
         print("\n[INFO] 开始第五章 EKD 知识蒸馏轻量化训练...")
-        for epoch in range(1, 30):
+        for epoch in range(1, 2):
             self.train_one_epoch(epoch)
             val_acc, val_mf1, val_loss, _, _ = self.evaluate('val')
             print(f"Epoch {epoch} | Val ACC: {val_acc:.2f}% | Val MF1: {val_mf1:.2f}")
