@@ -1,0 +1,4 @@
+Fold,Pre_Acc,Pre_MF1,Pre_Kappa,Pre_Lat(ms),Pre_FLOPs(M),Pre_Params(M),Rep_Acc,Rep_MF1,Rep_Kappa,Rep_Lat(ms),Rep_FLOPs(M),Rep_Params(M),Prune_Acc,Prune_MF1,Prune_Kappa,Prune_Lat(ms),Prune_FLOPs(M),Prune_Params(M),Prune_F1_W,Prune_F1_N1,Prune_F1_N2,Prune_F1_N3,Prune_F1_REM
+1,78.667,70.684,0.719,3.160,0.000,0.000,78.615,70.435,0.719,1.900,0.000,0.000,77.077,68.606,0.700,1.920,0.000,0.000,79.345,24.309,73.857,87.891,77.628
+MEAN,78.667,70.684,0.719,3.160,0.000,0.000,78.615,70.435,0.719,1.900,0.000,0.000,77.077,68.606,0.700,1.920,0.000,0.000,79.345,24.309,73.857,87.891,77.628
+STD,,,,,,,,,,,,,,,,,,,,,,,
