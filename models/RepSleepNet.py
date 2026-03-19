@@ -148,7 +148,7 @@ class RepSleepNet(nn.Module):
         bn_layer = self.spatial_stem[5]
         gamma = bn_layer.weight.data.abs()
 
-        # [修复]: 计算动态分位数阈值，强行剪掉最不重要的前 prune_ratio (如20%)
+        # 计算动态分位数阈值，强行剪掉最不重要的前 prune_ratio (如20%)
         threshold = torch.quantile(gamma, prune_ratio)
 
         # 寻找存活的通道索引

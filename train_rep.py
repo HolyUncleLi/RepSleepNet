@@ -215,14 +215,29 @@ def main():
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     set_random_seed(args.seed, use_cuda=torch.cuda.is_available())
-    with open(args.config) as config_file: config = json.load(config_file)
+
+    with open(args.config) as config_file:
+        config = json.load(config_file)
     config['name'] = os.path.basename(args.config).replace('.json', '')
     config['mode'] = 'normal'
+
+    # ========================================================
+    # [核心修复] 恢复原版的空数组初始化逻辑，利用拼接的副作用将其强转为 float
+    # 以完美兼容 utils.py 中 hardcode 的 '0.0', '1.0' 键值
+    # ========================================================
+    Y_true = np.zeros(0)
+    Y_pred = np.zeros((0, config['classifier']['num_classes']))
 
     for fold in range(1, 2):
         trainer = EKDTrainer(args, fold, config)
         y_true, y_pred = trainer.run()
-        summarize_result(config, fold, y_true, y_pred)
+
+        # 将整型的预测标签拼接到 float 类型的全零矩阵后
+        Y_true = np.concatenate([Y_true, y_true])
+        Y_pred = np.concatenate([Y_pred, y_pred])
+
+        # 这里传入的 Y_true 已经自动变成 float 类型了，utils.py 不会再报错
+        summarize_result(config, fold, Y_true, Y_pred)
 
 
 if __name__ == "__main__":
