@@ -204,7 +204,7 @@ def main():
 
     num_splits = config['dataset'].get('num_splits', 20)
     # 你可以改为 range(1, num_splits + 1) 跑满20折
-    for fold in range(1, num_splits + 1):
+    for fold in range(1, 5):
         trainer = EKDTrainer(args, fold, config)
         trainer.run()
 
