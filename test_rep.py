@@ -8,6 +8,7 @@ import time
 import numpy as np
 import pandas as pd
 import sklearn.metrics as skmet
+from sklearn.metrics import confusion_matrix
 from collections import OrderedDict
 
 import torch
@@ -17,19 +18,36 @@ from torch.utils.data import DataLoader
 from utils import set_random_seed, progress_bar
 from loader import EEGDataLoader
 
+
 # 导入你的轻量化学生模型
 from models.RepSleepNet import RepSleepNet
-
-# 尝试导入 thop 计算 FLOPs
-try:
-    from thop import profile
-
-    THOP_AVAILABLE = True
-except ImportError:
-    THOP_AVAILABLE = False
-    print("[WARN] 模块 'thop' 未安装，将无法准确计算 FLOPs。可通过 'pip install thop' 安装。")
-
 warnings.filterwarnings("ignore")
+
+
+def save_cm_csv(cm, savepath):
+    cm_new = np.zeros((5, 5))
+    for x in range(5):
+        t = cm.sum(axis=1)[x]
+        for y in range(5):
+            cm_new[x][y] = round(cm[x][y] / t * 100, 2) if t != 0 else 0
+
+    categories = ["W", "N1", "N2", "N3", "REM"]
+    df = pd.DataFrame(index=categories, columns=categories)
+
+    for x in range(5):
+        for y in range(5):
+            df.iloc[x, y] = f"{cm_new[x][y]}% ({int(cm[x][y])})"
+
+    df.to_csv(savepath, index=True)
+    print(f"[SUCCESS] 百分比+数据量混淆矩阵已保存至: {savepath}")
+
+
+def save_cm_counts_csv(cm, savepath):
+    """只保存原始数据量的混淆矩阵"""
+    categories = ["W", "N1", "N2", "N3", "REM"]
+    df = pd.DataFrame(cm.astype(int), index=categories, columns=categories)
+    df.to_csv(savepath, index=True)
+    print(f"[SUCCESS] 纯数据量混淆矩阵已保存至: {savepath}")
 
 
 class RepSleepEvaluator:
@@ -79,6 +97,57 @@ class RepSleepEvaluator:
         self.model.load_state_dict(new_state_dict, strict=False)
         return True
 
+    def count_flops_and_params(self, model, input_size):
+        """
+        手动统计 FLOPs 和参数量，不依赖第三方库
+        input_size: tuple, e.g. (batch_size, channels, length)
+        """
+        flops = 0
+        params = 0
+
+        def conv1d_flops(layer, x_shape):
+            # x_shape: (batch, in_channels, length)
+            batch, in_c, L = x_shape
+            out_c = layer.out_channels
+            k = layer.kernel_size[0]
+            out_L = (L + 2 * layer.padding[0] - k) // layer.stride[0] + 1
+            # 每个输出元素需要 in_c * k 次乘加
+            return batch * out_c * out_L * (in_c * k)
+
+        def linear_flops(layer, x_shape):
+            # x_shape: (batch, in_features)
+            batch, in_f = x_shape
+            out_f = layer.out_features
+            return batch * in_f * out_f
+
+        def bn_flops(layer, x_shape):
+            # BN: 每个元素一次加减乘除，近似为 4 FLOPs
+            return np.prod(x_shape) * 4
+
+        def relu_flops(x_shape):
+            # ReLU: 每个元素一次比较
+            return np.prod(x_shape)
+
+        # 遍历模型
+        for name, module in model.named_modules():
+            if isinstance(module, nn.Conv1d):
+                flops += conv1d_flops(module, input_size)
+                params += sum(p.numel() for p in module.parameters())
+            elif isinstance(module, nn.Linear):
+                # 假设输入是 (batch, in_features)
+                flops += linear_flops(module, (input_size[0], module.in_features))
+                params += sum(p.numel() for p in module.parameters())
+            elif isinstance(module, nn.BatchNorm1d):
+                flops += bn_flops(module, input_size)
+                params += sum(p.numel() for p in module.parameters())
+            elif isinstance(module, nn.ReLU):
+                flops += relu_flops(input_size)
+            else:
+                # 其他层可按需扩展
+                params += sum(p.numel() for p in module.parameters())
+
+        return flops / 1e6, params / 1e6  # 返回 M 单位
+
     @torch.no_grad()
     def evaluate_metrics(self, mode='test'):
         """计算模型预测指标：Acc, MF1, Kappa, Per-Class F1"""
@@ -102,7 +171,7 @@ class RepSleepEvaluator:
         kappa = skmet.cohen_kappa_score(y_true, y_pred_labels)
         class_f1s = skmet.f1_score(y_true, y_pred_labels, average=None) * 100
 
-        return acc, mf1, kappa, class_f1s
+        return acc, mf1, kappa, class_f1s, y_true, y_pred_labels
 
     @torch.no_grad()
     def measure_latency_and_flops(self):
@@ -111,10 +180,7 @@ class RepSleepEvaluator:
         dummy_input = torch.randn(10, 1, 30000).to(self.device)  # BatchSize=10, 时长30s
 
         # 1. 测算 FLOPs 和 Params
-        flops_m, params_m = 0.0, 0.0
-        if THOP_AVAILABLE:
-            flops, params = profile(self.model, inputs=(dummy_input,), verbose=False)
-            flops_m, params_m = flops / 1e6, params / 1e6
+        flops_m, params_m = self.count_flops_and_params(self.model, dummy_input.shape)
 
         # 2. 测算 Latency
         # 预热
@@ -131,7 +197,8 @@ class RepSleepEvaluator:
 
     def run_full_test(self, prune_ratio=0.25):
         """执行完整生命周期的评估"""
-        if not self.load_checkpoint(): return None
+        if not self.load_checkpoint():
+            return {}, [], []
 
         results = {"Fold": self.fold}
         class_names = ['W', 'N1', 'N2', 'N3', 'REM']
@@ -141,7 +208,7 @@ class RepSleepEvaluator:
         # ==========================================
         # 阶段 A：重参数化前 (多分支训练态)
         # ==========================================
-        acc, mf1, kappa, c_f1 = self.evaluate_metrics()
+        acc, mf1, kappa, c_f1,_,_ = self.evaluate_metrics()
         lat, flops, params = self.measure_latency_and_flops()
         results.update({
             "Pre_Acc": acc, "Pre_MF1": mf1, "Pre_Kappa": kappa,
@@ -155,7 +222,7 @@ class RepSleepEvaluator:
         # 强制将 threshold 设为极其小的负数，即只做结构折叠，不剪枝
         self.model.deploy_and_prune(prune_ratio=0.0)
 
-        acc, mf1, kappa, c_f1 = self.evaluate_metrics()
+        acc, mf1, kappa, c_f1, _,_ = self.evaluate_metrics()
         lat, flops, params = self.measure_latency_and_flops()
         results.update({
             "Rep_Acc": acc, "Rep_MF1": mf1, "Rep_Kappa": kappa,
@@ -171,7 +238,7 @@ class RepSleepEvaluator:
         self.load_checkpoint()
         self.model.deploy_and_prune(prune_ratio=prune_ratio)
 
-        acc, mf1, kappa, c_f1 = self.evaluate_metrics()
+        acc, mf1, kappa, c_f1, y_true, y_pred_labels = self.evaluate_metrics()
         lat, flops, params = self.measure_latency_and_flops()
 
         # 理论 FLOPs 扣减 (因为 Mask 是软剪枝，真实硬件测例需要手算下降率，这里模拟理论值)
@@ -188,8 +255,7 @@ class RepSleepEvaluator:
 
         print(
             f"[阶段C - 剪枝 {prune_ratio * 100}%] Acc: {acc:.2f}%, MF1: {mf1:.2f}, Latency: {lat:.2f}ms, 理论FLOPs: {theoretical_flops:.2f}M")
-
-        return results
+        return results, y_true, y_pred_labels
 
 
 def main():
@@ -198,9 +264,8 @@ def main():
     parser.add_argument('--gpu', type=str, default="0")
     parser.add_argument('--config', type=str, help='config file path',
                         default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json')
-    parser.add_argument('--prune_ratio', type=float, default=0.25, help='剪枝比例')
+    parser.add_argument('--prune_ratio', type=float, default=0.2, help='剪枝比例')
     args = parser.parse_args()
-
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -212,22 +277,32 @@ def main():
     config['mode'] = 'normal'
 
     all_fold_results = []
+    y_true_all, y_pred_all = [], []  # 新增：全局收集所有折的预测结果
 
-    # 遍历所有 20 折 (如果你只想测试前几折，可改为 range(1, 3))
     num_splits = config['dataset'].get('num_splits', 20)
     for fold in range(1, num_splits + 1):
         evaluator = RepSleepEvaluator(args, fold, config)
-        fold_res = evaluator.run_full_test(prune_ratio=args.prune_ratio)
+        fold_res, y_true, y_pred_labels = evaluator.run_full_test(prune_ratio=args.prune_ratio)
         if fold_res:
             all_fold_results.append(fold_res)
+            y_true_all.extend(y_true)
+            y_pred_all.extend(y_pred_labels)
 
     # ==========================================================
     # 数据汇总与本地保存
     # ==========================================================
+    # 统一计算全量混淆矩阵
+    if len(y_true_all) > 0:
+        full_cm = confusion_matrix(y_true_all, y_pred_all, labels=[0, 1, 2, 3, 4])
+        os.makedirs('results', exist_ok=True)
+
+        # 保存两种版本
+        save_cm_csv(full_cm, "results/RepSleepNet_FullConfusionMatrix.csv")
+        save_cm_counts_csv(full_cm, "results/RepSleepNet_FullConfusionMatrix_Counts.csv")
+
     if len(all_fold_results) > 0:
         df = pd.DataFrame(all_fold_results)
 
-        # 计算 20 折的平均值和标准差，并添加到最后两行
         mean_row = df.mean().to_dict()
         mean_row['Fold'] = 'MEAN'
         std_row = df.std().to_dict()
@@ -235,8 +310,6 @@ def main():
 
         df = pd.concat([df, pd.DataFrame([mean_row, std_row])], ignore_index=True)
 
-        # 保存到本地 results 文件夹
-        os.makedirs('results', exist_ok=True)
         save_path = f"results/RepSleepNet_Full_Eval_{args.prune_ratio * 100}Pruned.csv"
         df.to_csv(save_path, index=False, float_format='%.3f')
 

@@ -28,8 +28,8 @@ class EEGDataLoader(Dataset):
         self.target_idx = self.dset_cfg['target_idx']
         
         self.training_mode = config['training_params']['mode']
-
         self.dataset_path = os.path.join(self.root_dir, 'dset', self.dset_name, 'npz')
+        print("dataset path: ", self.dataset_path)
         if self.dset_name == 'shhs':
             self.epochs = self.split_dataset()      
         else:

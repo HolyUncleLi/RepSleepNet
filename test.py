@@ -12,7 +12,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from utils import *
 from loader import EEGDataLoader
-from models.protop_gabor import ProtoPNet
+from models.RepSleepNet import RepSleepNet
 
 warnings.filterwarnings("ignore")
 
@@ -36,12 +36,13 @@ class OneFoldEvaluator:
         self.loader_dict = self.build_dataloader()
 
         # 定义检查点路径
-        self.ckpt_path = os.path.join('checkpoints', config['name'] + '_' + str(args.seed))
-        self.ckpt_name = f'ckpt_fold-{self.fold:02d}.pth'
+        self.ckpt_path = os.path.join('checkpoints', 'RepSleepNet' + '_' + str(args.seed))
+        self.ckpt_name = f'repsleep_fold-{self.fold:02d}.pth'
 
     def build_model(self):
         # 确保实例化的是正确的 V2 模型
-        model = ProtoPNet(self.cfg)
+        model = RepSleepNet()
+
         print(f"[INFO] Number of params of model: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
         # 处理多GPU情况
@@ -82,10 +83,10 @@ class OneFoldEvaluator:
             # 核心：只进行前向传播
             outputs = self.model(inputs)
 
-            predicted = torch.argmax(outputs, 1)
+            predicted = torch.argmax(outputs[0], 1)
             correct += predicted.eq(labels).sum().item()
             y_true = np.concatenate([y_true, labels.cpu().numpy()])
-            y_pred = np.concatenate([y_pred, outputs.cpu().numpy()])
+            y_pred = np.concatenate([y_pred, outputs[0].cpu().numpy()])
 
             progress_bar(i, len(self.loader_dict[mode]), f'Evaluating {mode} set...')
 
@@ -160,26 +161,7 @@ def main():
         summarize_result(config, fold, Y_true, Y_pred)
 
         '''绘制混淆矩阵'''
-        # cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
-
-        '''绘制原型模板图像 & 混合矩阵热力图'''
-        '''
-        from visualize_prototype import generate_publication_figure, plot_mixing_weights_heatmap
-        class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
-        # generate_publication_figure(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
-        plot_mixing_weights_heatmap(evaluator.model, evaluator.device)
-        '''
-
-
-        '''
-        # 原生版本，弃用
-        from visualize_single_prototype import visualize_prototypes_final, explain_single_sample_final
-        class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
-        visualize_prototypes_final(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
-        for i in range(10):
-            single_sample, _ = evaluator.loader_dict['test'].dataset[i]
-            explain_single_sample_final(evaluator.model, single_sample, evaluator.device, class_names)
-        '''
+        cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
 
     mean_cm = np.mean(cm, axis=0)
     cm_plot(mean_cm, './results/cm.svg')

@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from utils import EarlyStopping, set_random_seed
 from loader import EEGDataLoader
 
-from models.protop_gabor import ProtoPNet
+from models.ProtSleepNet_Fast import ProtoPNet
 from models.RepSleepNet import RepSleepNet
 
 warnings.filterwarnings("ignore")
@@ -92,7 +92,8 @@ class EKDTrainer:
                                             ckpt_name=self.ckpt_name)
 
     def _load_teacher_weights(self):
-        teacher_ckpt = os.path.join('checkpoints', self.cfg['name'] + '_' + str(self.args.seed),
+        print(self.cfg)
+        teacher_ckpt = os.path.join('checkpoints', 'Teacher_ckpts',
                                     f'ckpt_fold-{self.fold:02d}.pth')
         if os.path.exists(teacher_ckpt):
             self.teacher_model.load_state_dict(torch.load(teacher_ckpt), strict=False)
@@ -209,7 +210,6 @@ def main():
 
     print("\n=======================================================")
     print("[SUCCESS] 所有折的知识蒸馏训练与验证均已完成！")
-    print("[NEXT STEP] 请运行 test_rep.py 进行测试集的全维度测评 (包含测速与剪枝)。")
     print("=======================================================")
 
 
